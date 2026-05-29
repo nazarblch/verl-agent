@@ -166,7 +166,7 @@ def _official_task(game_id="ls20"):
     return {"task_id": game_id, "game_id": game_id, "data_source": "arc_agi_3", "mode": "official"}
 
 
-def _config(train_batch_size=1, val_batch_size=1, group_n=1, mode="grid", max_action_sequence_len=1):
+def _config(train_batch_size=1, val_batch_size=1, group_n=1, mode="grid", max_action_sequence_len=1, action_format="python"):
     return OmegaConf.create(
         {
             "data": {"train_batch_size": train_batch_size, "val_batch_size": val_batch_size},
@@ -187,7 +187,8 @@ def _config(train_batch_size=1, val_batch_size=1, group_n=1, mode="grid", max_ac
                     "val_split": "validation",
                     "max_grid_size": 30,
                     "require_think": False,
-                    "require_program": True,
+                    "action_format": action_format,
+                    "require_program": action_format != "json",
                     "program_timeout": 5.0,
                     "program_memory_mb": 512,
                     "reward_correct": 1.0,
@@ -434,3 +435,47 @@ def test_arc_agi_3_official_visual_mismatch_stops_sequence(monkeypatch):
     assert infos[0]["sequence_stopped_reason"] == "mismatch"
     assert infos[0]["monitor_reports"][0]["expectation_met"] is False
     assert any("expected_visual_predicates" in m["field"] for m in infos[0]["monitor_reports"][0]["mismatches"])
+
+
+def test_arc_agi_3_official_json_action_skips_python_subprocess(monkeypatch):
+    _install_fake_arc_runtime(monkeypatch)
+    from agent_system.environments.env_package.arc_agi_3 import envs as envs_module
+
+    def fail_if_called(*args, **kwargs):
+        raise AssertionError("Python subprocess should not be used for action_format=json")
+
+    monkeypatch.setattr(envs_module, "_run_python_policy", fail_if_called)
+    cfg = _config(mode="official", action_format="json")
+    env = build_arc_agi_3_envs(seed=0, env_num=1, group_n=1, is_train=True, env_config=cfg.env)
+    manager = ArcAGI3EnvironmentManager(env, arc_agi_3_projection, cfg)
+    observations, _infos = manager.reset([_official_task("ls20")])
+    assert "<action>" in observations["text"][0]
+
+    payload = '<think>reset first</think><action>{"action":"RESET","expected_state":"NOT_FINISHED","expected_level_delta":0,"expected_win":false}</action>'
+    _next_observations, rewards, dones, infos = manager.step([payload])
+    assert infos[0]["action"]["action"] == "RESET"
+    assert infos[0]["state"] == "NOT_FINISHED"
+    assert infos[0]["monitor_report"]["expectation_met"] is True
+    assert infos[0]["is_action_valid"].item() == 1
+
+
+def test_arc_agi_3_official_json_action_sequence_skips_python_subprocess(monkeypatch):
+    _install_fake_arc_runtime(monkeypatch)
+    from agent_system.environments.env_package.arc_agi_3 import envs as envs_module
+
+    def fail_if_called(*args, **kwargs):
+        raise AssertionError("Python subprocess should not be used for action_format=json")
+
+    monkeypatch.setattr(envs_module, "_run_python_policy", fail_if_called)
+    cfg = _config(mode="official", max_action_sequence_len=3, action_format="json")
+    env = build_arc_agi_3_envs(seed=0, env_num=1, group_n=1, is_train=True, env_config=cfg.env)
+    manager = ArcAGI3EnvironmentManager(env, arc_agi_3_projection, cfg)
+    manager.reset([_official_task("ls20")])
+
+    payload = '<think>reset then finish</think><action>{"hypothesis":"Fake runtime wins after ACTION1","plan":"Reset then ACTION1","action_sequence":[{"action":"RESET","expected_state":"NOT_FINISHED","expected_level_delta":0,"expected_win":false},{"action":"ACTION1","expected_state":"WIN","expected_level_delta":1,"expected_win":true}],"stop_on_mismatch":true}</action>'
+    _next_observations, rewards, dones, infos = manager.step([payload])
+    assert rewards.tolist() == [1.0]
+    assert dones.tolist() == [True]
+    assert [a["action"] for a in infos[0]["action_sequence_executed"]] == ["RESET", "ACTION1"]
+    assert infos[0]["actions_executed"] == 2
+    assert infos[0]["sequence_stopped_reason"] == "terminal"

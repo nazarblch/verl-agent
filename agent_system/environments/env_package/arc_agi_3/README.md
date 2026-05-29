@@ -172,7 +172,8 @@ python -m verl.trainer.main_ppo \
   env.max_steps=80 \
   env.history_length=2 \
   env.rollout.n=1 \
-  env.arc_agi_3.require_program=true \
+  env.arc_agi_3.action_format=json \
+env.arc_agi_3.require_program=false \
   env.arc_agi_3.program_timeout=5.0 \
   env.arc_agi_3.program_memory_mb=512 \
   env.arc_agi_3.max_action_sequence_len=1 \
@@ -202,7 +203,8 @@ python -m verl.trainer.main_ppo \
   env.max_steps=80 \
   env.history_length=2 \
   env.rollout.n=1 \
-  env.arc_agi_3.require_program=true \
+  env.arc_agi_3.action_format=json \
+env.arc_agi_3.require_program=false \
   env.arc_agi_3.program_timeout=5.0 \
   env.arc_agi_3.program_memory_mb=512 \
   env.arc_agi_3.max_action_sequence_len=1 \
@@ -263,18 +265,69 @@ Avoid large sequence lengths until the model reliably predicts dynamics.
 
 ---
 
+## Direct JSON Action Mode
+
+The recommended default for official ARC-AGI-3 training is now:
+
+```bash
+env.arc_agi_3.action_format=json \
+env.arc_agi_3.require_program=false
+```
+
+In this mode the model returns a structured JSON action in `<action>...</action>` tags. The environment parses the JSON and sends the action directly to the ARC runtime. **No Python subprocess is started**.
+
+### Single action
+
+```xml
+<think>The game is not started yet, so I should reset first.</think>
+<action>{
+  "action": "RESET",
+  "hypothesis": "The game is not started yet.",
+  "plan": "Reset to obtain the first playable frame.",
+  "expected_state": "NOT_FINISHED",
+  "expected_level_delta": 0,
+  "expected_win": false
+}</action>
+```
+
+### Controlled action sequence
+
+```xml
+<think>The next two steps are predictable, so I will use a short controlled sequence.</think>
+<action>{
+  "hypothesis": "The avatar must move right and activate the target.",
+  "plan": "Move right twice, then interact if expectations hold.",
+  "action_sequence": [
+    {"action": "ACTION4", "expected_frame_changed": true},
+    {"action": "ACTION4", "expected_frame_changed": true},
+    {"action": "ACTION5", "expected_win": true}
+  ],
+  "stop_on_mismatch": true
+}</action>
+```
+
+The existing monitor/reflection loop, visual DSL, object/color/cell checks, and controlled multi-action early-stop logic all work the same way in JSON mode.
+
+Use the older Python-policy mode only for advanced program-synthesis experiments:
+
+```bash
+env.arc_agi_3.action_format=python \
+env.arc_agi_3.require_program=true
+```
+
+In Python mode the model must return `<python>...</python>`, and the environment executes the policy in a subprocess to obtain the action/action_sequence.
+
+---
+
 ## Python Policy Contract
 
-The model must answer with executable Python inside tags:
+Default mode is direct JSON actions. The model should answer with `<think>` plus `<action>` JSON. Python policies are still available as optional advanced mode with `env.arc_agi_3.action_format=python`.
 
 ```text
 <think>
 Reason about the frame, hypothesis, and expected effect.
 </think>
-<python>
-def choose_action(context):
-    ...
-</python>
+<action>{"action":"RESET","expected_state":"NOT_FINISHED"}</action>
 ```
 
 Supported contracts:
@@ -553,7 +606,8 @@ env:
     val_split: validation
     max_grid_size: 30
     require_think: false
-    require_program: true
+    action_format: json # json|python
+    require_program: false
     program_timeout: 5.0
     program_memory_mb: 512
     reward_correct: 1.0
@@ -719,7 +773,8 @@ python -m verl.trainer.main_ppo \
   env.max_steps=80 \
   env.history_length=2 \
   env.rollout.n=1 \
-  env.arc_agi_3.require_program=true \
+  env.arc_agi_3.action_format=json \
+env.arc_agi_3.require_program=false \
   env.arc_agi_3.program_timeout=5.0 \
   env.arc_agi_3.program_memory_mb=512 \
   env.arc_agi_3.max_action_sequence_len=1 \

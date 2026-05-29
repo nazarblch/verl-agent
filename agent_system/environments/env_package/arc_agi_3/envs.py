@@ -1005,6 +1005,7 @@ class ArcAGI3Env(gym.Env):
         self.reward_wrong = float(_get_config_value(self.arc_config, "reward_wrong", 0.0))
         self.reward_per_level = float(_get_config_value(self.arc_config, "reward_per_level", 0.1))
         self.max_action_sequence_len = max(1, int(_get_config_value(self.arc_config, "max_action_sequence_len", 1)))
+        self.action_format = str(_get_config_value(self.arc_config, "action_format", "python")).lower()
         self.stop_sequence_on_mismatch = bool(_get_config_value(self.arc_config, "stop_sequence_on_mismatch", True))
         self.stop_sequence_on_invalid = bool(_get_config_value(self.arc_config, "stop_sequence_on_invalid", True))
         self.stop_sequence_on_terminal = bool(_get_config_value(self.arc_config, "stop_sequence_on_terminal", True))
@@ -1177,7 +1178,7 @@ class ArcAGI3Env(gym.Env):
             info["error"] = error
         return next_obs, reward, done, info
 
-    def _step_official(self, idx: int, task: Dict[str, Any], runtime: _OfficialArcRuntime, program: str):
+    def _step_official(self, idx: int, task: Dict[str, Any], runtime: _OfficialArcRuntime, action_payload: Any):
         """Execute a controlled policy action_sequence with per-step monitoring.
 
         The LLM still runs once and returns either one action or an
@@ -1215,7 +1216,10 @@ class ArcAGI3Env(gym.Env):
                 "latest_frame_summary": _compact_frame_context(before_frame, self.max_prompt_frame_cells),
                 "last_frame_diff": _compact_frame_diff(_compute_frame_diff(runtime.frames[-2], runtime.frames[-1], self.max_frame_changed_cells)) if len(runtime.frames) >= 2 else None,
             }
-            policy_output = _run_python_policy(program, context, self.program_timeout, self.program_memory_mb)
+            if self.action_format == "json":
+                policy_output = _normalize_policy_output(action_payload)
+            else:
+                policy_output = _run_python_policy(action_payload, context, self.program_timeout, self.program_memory_mb)
             remaining_actions = max(0, self.max_steps - (self.steps[idx] - 1))
             allowed_len = min(self.max_action_sequence_len, max(1, remaining_actions))
             action_sequence = _policy_action_sequence(policy_output, allowed_len)
@@ -1288,7 +1292,7 @@ class ArcAGI3Env(gym.Env):
         }
         feedback = f"Monitor report: {json.dumps(feedback_payload, ensure_ascii=False, separators=(',', ':'))}"
         if error:
-            feedback = f"Invalid ARC-AGI-3 Python policy/action_sequence: {error}. " + feedback
+            feedback = f"Invalid ARC-AGI-3 action/action_sequence: {error}. " + feedback
         next_obs = {
             "mode": "official",
             "task_id": task["task_id"],

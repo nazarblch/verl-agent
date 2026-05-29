@@ -11,7 +11,7 @@ You are playing an ARC-AGI-3 interactive game environment.
 Use this closed-loop method on every turn:
 
 [1. INFERENCE / LLM] Generate a hypothesis about the game rule/state, a plan, and explicit expected outcome(s).
-[2. ACTION / Environment] Your Python policy returns one ARC-AGI-3 action or a short controlled `action_sequence`; the environment executes it step by step.
+[2. ACTION / Environment] Return one ARC-AGI-3 action or a short controlled `action_sequence`; the environment executes it step by step.
 [3. COMPARISON / Monitor] After every executed action, the environment compares your expectation with the actual next Frame.
 [4. REFLECTION / LLM] On the next turn, analyze the monitor reports, update working memory, and revise the hypothesis/plan.
 
@@ -26,15 +26,17 @@ Current observation:
 Available actions:
 {available_actions}
 
-Respond with reasoning in <think> </think> tags. Then provide executable Python in <python> </python> tags.
+Respond with reasoning in <think> </think> tags. Then provide the action payload.
 
-Your Python MUST define one of:
+Default fast path, `action_format=json`: provide direct JSON in <action> </action> tags. Do not write Python in this mode. The environment parses the JSON and sends the action/action_sequence directly to ARC runtime without a Python subprocess.
+
+Optional advanced path, `action_format=python`: provide executable Python in <python> </python> tags. Your Python MUST define one of:
 1. choose_action(frames, latest_frame) -> action dict or action string
 2. choose_action(context) -> action dict or action string
 3. solve(context) -> action dict or action string
 4. a global variable action / answer with the same format
 
-The returned action dict SHOULD include these monitorable fields:
+The returned JSON/action dict SHOULD include these monitorable fields:
 - `hypothesis`: your current belief about the rule/dynamics.
 - `plan`: why this action follows from the hypothesis.
 - `expected_state`: optional expected next state, e.g. "NOT_FINISHED" or "WIN".
@@ -66,29 +68,23 @@ Action format:
 
 Only choose actions listed in available_actions when possible.
 
-Example response format:
+Example JSON response format:
 <think>I need to start the game first, then compare the first real frame with my expectations.</think>
+<action>{{
+  "action": "RESET",
+  "hypothesis": "The game has not started yet, so no level logic is visible.",
+  "plan": "Reset to obtain the first playable frame.",
+  "expected_state": "NOT_FINISHED",
+  "expected_level_delta": 0,
+  "expected_win": false,
+  "expected_outcome": "A first playable frame should appear.",
+  "confidence": 1.0
+}}</action>
+
+Advanced Python response format, only when action_format=python:
 <python>
 def choose_action(frames, latest_frame):
-    if latest_frame.get("state") in ("NOT_PLAYED", "GAME_OVER"):
-        return {{
-            "action": "RESET",
-            "hypothesis": "The game has not started yet, so no level logic is visible.",
-            "plan": "Reset to obtain the first playable frame.",
-            "expected_state": "NOT_FINISHED",
-            "expected_level_delta": 0,
-            "expected_win": False,
-            "expected_outcome": "A first playable frame should appear.",
-            "confidence": 1.0,
-        }}
-    return {{
-        "action": "ACTION5",
-        "hypothesis": "The main action may interact with the current object.",
-        "plan": "Try the primary action and inspect the monitor report.",
-        "expected_level_delta": 0,
-        "expected_outcome": "The frame changes or reveals interaction feedback.",
-        "confidence": 0.3,
-    }}
+    return {{"action": "RESET", "expected_state": "NOT_FINISHED"}}
 </python>
 """
 
@@ -98,7 +94,7 @@ You are playing an ARC-AGI-3 interactive game environment.
 Use this closed-loop method on every turn:
 
 [1. INFERENCE / LLM] Generate a hypothesis about the game rule/state, a plan, and explicit expected outcome(s).
-[2. ACTION / Environment] Your Python policy returns one ARC-AGI-3 action or a short controlled `action_sequence`; the environment executes it step by step.
+[2. ACTION / Environment] Return one ARC-AGI-3 action or a short controlled `action_sequence`; the environment executes it step by step.
 [3. COMPARISON / Monitor] After every executed action, the environment compares your expectation with the actual next Frame.
 [4. REFLECTION / LLM] Analyze the monitor reports below, update working memory, and revise the next hypothesis/plan.
 
@@ -114,9 +110,8 @@ Available actions:
 Prior compact monitor summaries, actions, and reflection prompts:
 {action_history}
 
-You are now at step {current_step}. Respond with reasoning in <think> </think> tags. Then provide executable Python in <python> </python> tags.
-Your Python MUST choose one ARC-AGI-3 action or a controlled short `action_sequence` using choose_action(frames, latest_frame), choose_action(context), solve(context), or global action/answer.
-The returned action dict or each action_sequence item SHOULD include `hypothesis`, `plan`, at least one `expected_*` field, and an updated `reflection` note.
+You are now at step {current_step}. Respond with reasoning in <think> </think> tags. In default `action_format=json`, provide direct JSON in <action> </action> tags; do not write Python. In optional `action_format=python`, provide executable Python in <python> </python> tags using choose_action(frames, latest_frame), choose_action(context), solve(context), or global action/answer.
+The returned JSON/action dict or each action_sequence item SHOULD include `hypothesis`, `plan`, at least one `expected_*` field, and an updated `reflection` note.
 Use `action_sequence` only when the next steps are predictable; the monitor will stop early if any checked expectation fails.
 """
 

@@ -15,6 +15,7 @@ from typing import Any, List, Tuple
 _CODE_BLOCK_RE = re.compile(r"<(?:python|code)>(.*?)</(?:python|code)>", re.IGNORECASE | re.DOTALL)
 _MARKDOWN_CODE_RE = re.compile(r"```(?:python|py)?\s*(.*?)```", re.IGNORECASE | re.DOTALL)
 _ANSWER_BLOCK_RE = re.compile(r"<answer>(.*?)</answer>", re.IGNORECASE | re.DOTALL)
+_ACTION_BLOCK_RE = re.compile(r"<action>(.*?)</action>", re.IGNORECASE | re.DOTALL)
 _THINK_BLOCK_RE = re.compile(r"<think>(.*?)</think>", re.IGNORECASE | re.DOTALL)
 
 
@@ -68,10 +69,16 @@ def arc_agi_3_projection(
     require_think: bool = False,
     max_grid_size: int = 30,
     require_program: bool = True,
+    action_format: str = "python",
 ) -> Tuple[List[Any], List[int]]:
-    """Extract Python solver programs from LLM responses.
+    """Extract ARC-AGI-3 actions from LLM responses.
 
-    Preferred ARC-AGI-3 action format::
+    ``action_format="json"`` extracts direct JSON from ``<action>...</action>``
+    and returns the parsed action/action_sequence without requiring Python.
+
+    ``action_format="python"`` extracts Python solver/policy programs.
+
+    Preferred Python ARC-AGI-3 action format::
 
         <think>...</think>
         <python>
@@ -89,12 +96,31 @@ def arc_agi_3_projection(
 
     results: List[Any] = []
     valids: List[int] = []
+    fmt = str(action_format or "python").lower()
 
     for action in actions:
         action = action or ""
         valid = 1
         if require_think and _THINK_BLOCK_RE.search(action) is None:
             valid = 0
+
+        if fmt == "json":
+            action_matches = _ACTION_BLOCK_RE.findall(action)
+            if len(action_matches) != 1:
+                results.append(_fallback_action())
+                valids.append(0)
+                continue
+            try:
+                parsed = json.loads(action_matches[0].strip())
+            except Exception:
+                results.append(_fallback_action())
+                valids.append(0)
+                continue
+            if not isinstance(parsed, (dict, list, str)):
+                valid = 0
+            results.append(parsed)
+            valids.append(int(valid and isinstance(parsed, (dict, list, str))))
+            continue
 
         code_matches = _CODE_BLOCK_RE.findall(action)
         if not code_matches:

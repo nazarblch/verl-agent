@@ -821,8 +821,14 @@ def make_envs(config):
         arc_cfg = getattr(config.env, "arc_agi_3", None)
         require_think = bool(getattr(arc_cfg, "require_think", False)) if arc_cfg is not None else False
         max_grid_size = int(getattr(arc_cfg, "max_grid_size", 30)) if arc_cfg is not None else 30
+        action_format = str(getattr(arc_cfg, "action_format", "python")) if arc_cfg is not None else "python"
+        arc_mode = str(getattr(arc_cfg, "mode", "auto")) if arc_cfg is not None else "auto"
+        if arc_mode.lower() == "grid":
+            action_format = "python"
         require_program = bool(getattr(arc_cfg, "require_program", True)) if arc_cfg is not None else True
-        projection_f = partial(arc_agi_3_projection, require_think=require_think, max_grid_size=max_grid_size, require_program=require_program)
+        if action_format.lower() == "json":
+            require_program = False
+        projection_f = partial(arc_agi_3_projection, require_think=require_think, max_grid_size=max_grid_size, require_program=require_program, action_format=action_format)
         envs = ArcAGI3EnvironmentManager(_envs, projection_f, config)
         val_envs = ArcAGI3EnvironmentManager(_val_envs, projection_f, config)
         return envs, val_envs
