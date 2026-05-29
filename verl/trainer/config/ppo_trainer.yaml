@@ -314,3 +314,28 @@ env:
   webshop:
     use_small: True
     human_goals: False
+  arc_agi_3:
+    mode: auto # official|grid|auto; official uses arc_agi.Arcade().make(game_id)
+    game_id: null # e.g. ls20; can also be supplied via env_kwargs.game_id
+    games: null
+    scorecard_id: null
+    data_dir: null
+    train_split: train
+    val_split: validation
+    max_grid_size: 30
+    require_think: false
+    require_program: true
+    program_timeout: 5.0
+    program_memory_mb: 512
+    reward_correct: 1.0
+    reward_wrong: 0.0
+    reward_per_level: 0.1
+    max_action_sequence_len: 1 # default single-action; set 2-5 for controlled multi-action plans
+    stop_sequence_on_mismatch: true
+    stop_sequence_on_invalid: true
+    stop_sequence_on_terminal: true
+    context_compression: true
+    max_history_monitor_mismatches: 4
+    max_frame_changed_cells: 64
+    max_prompt_frame_cells: 256
+    include_full_frame_in_prompt: true

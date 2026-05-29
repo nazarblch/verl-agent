@@ -19,3 +19,4 @@ from .sokoban import *
 from .gym_cards import *
 from .appworld import *
 from .search import *
+from .arc_agi_3 import *

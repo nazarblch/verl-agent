@@ -23,3 +23,5 @@ packaging>=20.0
 uvicorn
 fastapi
 qwen-vl-utils[decord]
+# Optional for official ARC-AGI-3 interactive env: pip install -e .[arc_agi_3]
+# arc-agi>=0.9.1

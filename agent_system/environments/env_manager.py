@@ -130,6 +130,185 @@ class SearchEnvironmentManager(EnvironmentManagerBase):
                 return  # Exit after finding the first active mask
             
 
+
+class ArcAGI3EnvironmentManager(EnvironmentManagerBase):
+    """EnvironmentManager for ARC-AGI-3 interactive and grid-compat tasks."""
+
+    def __init__(self, envs, projection_f, config):
+        self.memory = SimpleMemory()
+        super().__init__(envs, projection_f, config)
+
+    def reset(self, kwargs) -> Tuple[Dict[str, Any], List[Dict]]:
+        obs, infos = self.envs.reset(kwargs=kwargs)
+        self.tasks = obs
+        self.pre_text_obs = obs
+        self.memory.reset(batch_size=len(obs))
+        observations = {
+            "text": self.build_text_obs(obs, init=True),
+            "image": None,
+            "anchor": obs.copy(),
+        }
+        return observations, infos
+
+    def step(self, text_actions: List[str]):
+        actions, valids = self.projection_f(text_actions)
+        next_obs, rewards, dones, infos = self.envs.step(actions)
+
+        self.memory.store({
+            "text_obs": self.pre_text_obs,
+            "action": actions,
+            "feedback": [obs.get("feedback", "") if isinstance(obs, dict) else "" for obs in next_obs],
+            "monitor_report": [obs.get("monitor_report", {}) if isinstance(obs, dict) else {} for obs in next_obs],
+            "monitor_summary": [obs.get("monitor_summary", {}) if isinstance(obs, dict) else {} for obs in next_obs],
+            "reflection_prompt": [obs.get("reflection_prompt", "") if isinstance(obs, dict) else "" for obs in next_obs],
+        })
+        self.pre_text_obs = next_obs
+
+        next_observations = {
+            "text": self.build_text_obs(next_obs),
+            "image": None,
+            "anchor": next_obs.copy(),
+        }
+
+        for i, info in enumerate(infos):
+            info["is_action_valid"] = to_numpy(valids[i])
+
+        rewards = to_numpy(rewards)
+        dones = to_numpy(dones)
+        return next_observations, rewards, dones, infos
+
+    def _format_grid_examples(self, task: Dict[str, Any]) -> Tuple[str, str]:
+        import json
+
+        train_lines = []
+        for idx, pair in enumerate(task.get("train", []), start=1):
+            train_lines.append(
+                f"Example {idx}:\nInput: {json.dumps(pair.get('input'), separators=(',', ':'))}\n"
+                f"Output: {json.dumps(pair.get('output'), separators=(',', ':'))}"
+            )
+        test_lines = []
+        for idx, item in enumerate(task.get("test", []), start=1):
+            test_lines.append(f"Test {idx}: {json.dumps(item.get('input'), separators=(',', ':'))}")
+        return "\n\n".join(train_lines), "\n".join(test_lines)
+
+    def _format_frame(self, frame: Dict[str, Any]) -> str:
+        import json
+
+        compact = {
+            "state": frame.get("state"),
+            "levels_completed": frame.get("levels_completed"),
+            "win_levels": frame.get("win_levels"),
+            "full_reset": frame.get("full_reset"),
+            "frame": frame.get("frame", []),
+        }
+        return json.dumps(compact, ensure_ascii=False, separators=(",", ":"))
+
+    def _format_available_actions(self, obs: Dict[str, Any]) -> str:
+        import json
+
+        latest = obs.get("latest_frame", {}) if isinstance(obs, dict) else {}
+        available = latest.get("available_actions") or obs.get("available_actions") or [
+            "RESET", "ACTION1", "ACTION2", "ACTION3", "ACTION4", "ACTION5", "ACTION6", "ACTION7"
+        ]
+        return json.dumps(available, ensure_ascii=False)
+
+
+    def _format_arc_history(self, env_idx: int, history_length: int) -> str:
+        """Compact ARC-AGI-3 monitor history for prompt context compression."""
+        import json
+
+        if history_length <= 0 or env_idx >= len(self.memory):
+            return ""
+        records = self.memory[env_idx][-history_length:]
+        lines = []
+        for offset, rec in enumerate(records, start=max(1, len(self.memory[env_idx]) - len(records) + 1)):
+            action = rec.get("action")
+            summary = rec.get("monitor_summary") or rec.get("monitor_report") or {}
+            if isinstance(summary, dict) and "monitor_summaries" in summary:
+                summary = {
+                    "sequence_stopped_reason": summary.get("sequence_stopped_reason"),
+                    "actions_executed": summary.get("actions_executed"),
+                    "monitor_summaries": summary.get("monitor_summaries", []),
+                }
+            elif isinstance(summary, dict) and "monitor_summary" in summary:
+                summary = summary.get("monitor_summary")
+            reflection = rec.get("reflection_prompt", "")
+            lines.append(
+                f"[Step {offset}]\n"
+                f"Action/program: {json.dumps(action, ensure_ascii=False, default=str)[:2000]}\n"
+                f"Monitor summary: {json.dumps(summary, ensure_ascii=False, separators=(',', ':'), default=str)[:3000]}\n"
+                f"Reflection prompt: {reflection}"
+            )
+        return "\n\n".join(lines)
+
+    def build_text_obs(self, text_obs: List[Dict[str, Any]], init: bool = False) -> List[str]:
+        postprocess_text_obs = []
+        if not init and self.config.env.history_length > 0:
+            memory_contexts, valid_lens = self.memory.fetch(
+                self.config.env.history_length,
+                obs_key="monitor_report",
+                action_key="action",
+            )
+
+        for i, obs_dict in enumerate(text_obs):
+            mode = obs_dict.get("mode", "grid" if "train" in obs_dict else "official")
+            if mode == "grid":
+                train_examples, test_inputs = self._format_grid_examples(obs_dict)
+                if init or self.config.env.history_length <= 0:
+                    obs = ARC_AGI_3_GRID_TEMPLATE_NO_HIS.format(
+                        task_id=obs_dict.get("task_id", "unknown"),
+                        train_examples=train_examples,
+                        test_inputs=test_inputs,
+                    )
+                else:
+                    obs = ARC_AGI_3_GRID_TEMPLATE.format(
+                        task_id=obs_dict.get("task_id", "unknown"),
+                        train_examples=train_examples,
+                        test_inputs=test_inputs,
+                        action_history=memory_contexts[i],
+                        current_step=len(self.memory[i]) + 1,
+                    )
+            else:
+                latest_frame = obs_dict.get("latest_frame", {})
+                current_observation = self._format_frame(latest_frame)
+                if obs_dict.get("latest_frame_summary"):
+                    import json
+                    current_observation += "\nCompact summary:\n" + json.dumps(obs_dict.get("latest_frame_summary"), ensure_ascii=False, separators=(",", ":"))
+                available_actions = self._format_available_actions(obs_dict)
+                if init or self.config.env.history_length <= 0:
+                    obs = ARC_AGI_3_TEMPLATE_NO_HIS.format(
+                        task_id=obs_dict.get("game_id") or obs_dict.get("task_id", "unknown"),
+                        mode=mode,
+                        current_observation=current_observation,
+                        available_actions=available_actions,
+                    )
+                else:
+                    arc_history = self._format_arc_history(i, self.config.env.history_length)
+                    obs = ARC_AGI_3_TEMPLATE.format(
+                        task_id=obs_dict.get("game_id") or obs_dict.get("task_id", "unknown"),
+                        mode=mode,
+                        current_observation=current_observation,
+                        available_actions=available_actions,
+                        action_history=arc_history or memory_contexts[i],
+                        current_step=len(self.memory[i]) + 1,
+                    )
+            postprocess_text_obs.append(obs)
+        return postprocess_text_obs
+
+    def _process_batch(self, batch_idx, total_batch_list, total_infos, success):
+        for i in reversed(range(len(total_batch_list[batch_idx]))):
+            batch_item = total_batch_list[batch_idx][i]
+            if batch_item['active_masks']:
+                info = total_infos[batch_idx][i]
+                won_value = float(info['won'])
+                success['success_rate'].append(won_value)
+                data_source = info.get("data_source", "arc_agi_3")
+                success[f"{data_source}_success_rate"].append(won_value)
+                if "levels_completed" in info:
+                    success[f"{data_source}_levels_completed"].append(float(info.get("levels_completed", 0)))
+                return
+
+
 class AlfWorldEnvironmentManager(EnvironmentManagerBase):
     def __init__(self, envs, projection_f, config):
         self.memory = SimpleMemory()
@@ -617,6 +796,35 @@ def make_envs(config):
         projection_f = partial(search_projection)
         envs = SearchEnvironmentManager(_envs, projection_f, config)
         val_envs = SearchEnvironmentManager(_val_envs, projection_f, config)
+        return envs, val_envs
+
+    elif "arc_agi_3" in config.env.env_name.lower() or "arc-agi-3" in config.env.env_name.lower():
+        from agent_system.environments.env_package.arc_agi_3 import build_arc_agi_3_envs, arc_agi_3_projection
+
+        _envs = build_arc_agi_3_envs(
+            seed=config.env.seed,
+            env_num=config.data.train_batch_size,
+            group_n=group_n,
+            is_train=True,
+            env_config=config.env,
+            resources_per_worker=resources_per_worker,
+        )
+        _val_envs = build_arc_agi_3_envs(
+            seed=config.env.seed + 1000,
+            env_num=config.data.val_batch_size,
+            group_n=1,
+            is_train=False,
+            env_config=config.env,
+            resources_per_worker=resources_per_worker,
+        )
+
+        arc_cfg = getattr(config.env, "arc_agi_3", None)
+        require_think = bool(getattr(arc_cfg, "require_think", False)) if arc_cfg is not None else False
+        max_grid_size = int(getattr(arc_cfg, "max_grid_size", 30)) if arc_cfg is not None else 30
+        require_program = bool(getattr(arc_cfg, "require_program", True)) if arc_cfg is not None else True
+        projection_f = partial(arc_agi_3_projection, require_think=require_think, max_grid_size=max_grid_size, require_program=require_program)
+        envs = ArcAGI3EnvironmentManager(_envs, projection_f, config)
+        val_envs = ArcAGI3EnvironmentManager(_val_envs, projection_f, config)
         return envs, val_envs
     elif "gym_cards" in config.env.env_name.lower():
         from agent_system.environments.env_package.gym_cards import build_gymcards_envs, gym_projection
